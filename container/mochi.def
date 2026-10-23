@@ -1,0 +1,202 @@
+# MOCHI — single-file container build.
+# Run from the repository root:
+#   apptainer build mochi.sif container/mochi.def
+#
+# Stage 1 fetches Annotate-contigs at the validated commit and builds its conda env.
+# Stage 2 builds KaMRaT at the validated commit, then adds the MOCHI env and pipeline.
+
+# --- Stage 1: Annotate-contigs (code + conda environment) ---
+
+Bootstrap: docker
+From: continuumio/miniconda3:24.7.1-0
+Stage: annot
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+    git clone https://github.com/Transipedia/Annotate-contigs.git /opt/Annotate-contigs
+    git -C /opt/Annotate-contigs checkout d40e24020e955195d54fab8628047614a2c874ca
+    rm -rf /opt/Annotate-contigs/script/__pycache__
+
+    conda env create -f /opt/Annotate-contigs/annotatecontig.yml -y
+    conda clean -a -y
+    tar -C /opt/conda/envs -cf /AnnotateContig.tar AnnotateContig
+
+# --- Stage 2: KaMRaT + MOCHI ---
+
+Bootstrap: docker
+From: ubuntu:22.04
+Stage: final
+
+%labels
+    Name MOCHI
+    Description Mapping Of Cryptic Hidden Intronic transcripts (self-contained)
+    Version 1.0.0
+    KaMRaT_commit cce7e8be58972d9eee44ebf20366b6730ba5e578
+    AnnotateContigs_commit d40e24020e955195d54fab8628047614a2c874ca
+
+%files from annot
+    /AnnotateContig.tar                 /opt/mochi_build/AnnotateContig.tar
+    /opt/Annotate-contigs/Snakefile     /opt/mochi/annotate_contigs/Snakefile
+    /opt/Annotate-contigs/script        /opt/mochi/annotate_contigs/script
+
+%files
+    container/mochi_env.yml             /opt/mochi_build/mochi_env.yml
+    main.nf                             /opt/mochi/main.nf
+    modules.nf                          /opt/mochi/modules.nf
+    nextflow.config                     /opt/mochi/nextflow.config
+    script                              /opt/mochi/script
+
+%help
+    MOCHI - Mapping Of Cryptic Hidden Intronic transcripts
+
+    Detects candidate intronic RNA units from stranded paired-end RNA-seq.
+    Documentation and example files: https://github.com/dcansugurer/MOCHI
+
+    USAGE
+      apptainer run --cleanenv -B /path/to/data mochi.sif [options]
+
+    REQUIRED INPUTS
+      --metafile        Tab-separated sample sheet with header line:
+                          condition  sample_id  replicate
+      --raw_reads       Quoted glob for paired FASTQ files, e.g.
+                          '/path/to/data/*{_R1,_R2}.fastq.gz'
+                        The part matched by * must equal sample_id.
+      --genome          Genome FASTA (.fa or .fa.gz)
+      --transcriptome   Transcriptome FASTA (must be UNCOMPRESSED)
+      --annotation      Annotation GTF (.gtf or .gtf.gz)
+      --exon_file       Exon BED (sorted, 6 columns, canonical chromosomes only)
+      --intron_file     Intron BED (sorted, 6 columns, canonical chromosomes only)
+      --repeat          Repeat reference FASTA
+      --lib_type        rf (dUTP; R2 = sense) or fr. Unstranded data is not supported.
+
+    ALIGNMENT INDICES (choose one)
+      --index           First run: build STAR and minimap2 indices from --genome
+                        and --annotation. They are saved to
+                          output/3_contig_annotation/human_index/
+      --human_index <dir> --star_index <dir>
+                        Later runs: reuse indices from a previous --index run.
+                        Both parameters are required:
+                          --human_index  .../human_index
+                          --star_index   .../human_index/star
+                        Expected layout:
+                          human_index/star/                (STAR index)
+                          human_index/minimap2/human.mmi   (minimap2 index)
+                        Indices must be built from the same genome and
+                        annotation passed with --genome and --annotation.
+                        Indices built outside MOCHI may be incompatible
+                        (STAR version); prefer those from a MOCHI --index run.
+
+    CANDIDATE DISCOVERY WITHOUT DE (default)
+      --sample_name <name>
+                        Required when --DE is not given. Must match the
+                        single condition in the metafile.
+
+    DIFFERENTIAL EXPRESSION (optional, DESeq2)
+      --DE --control_group <name> --test_group <name>
+                        Replaces --sample_name. Names must match the condition
+                        column of the metafile. At least 2 replicates per
+                        condition are required.
+
+    USEFUL NEXTFLOW OPTIONS
+      -resume           Reuse completed steps from a previous run
+      -with-report      HTML report of runtime and resource usage
+      -with-trace       Per-task trace file
+
+    NOTES
+      - Every input path, including symlink targets, must be under a directory
+        bound with -B. Multiple directories: -B /data,/scratch
+      - Results and intermediate files are written to output/ in the launch
+        directory. Intermediate files are kept so they can be reused.
+      - On SLURM, run MOCHI as a single job; it uses the allocated CPUs and
+        memory. Request at least 40 GB for the STAR step.
+      - Nextflow needs a writable home directory. Default:
+        ${TMPDIR:-/tmp}/mochi_nxf_<uid>. Override with
+        --env MOCHI_NXF_HOME=/writable/path
+
+%environment
+    export LC_ALL=C
+    export PYTHONNOUSERSITE=1
+    export NXF_OFFLINE=true
+    # NXF_HOME must be writable; /opt/nxf is read-only inside the image.
+    # On first use, /opt/nxf is copied to a writable location (small; safe with parallel jobs).
+    # Override the location with --env MOCHI_NXF_HOME=/path (or export MOCHI_NXF_HOME=...).
+    _mochi_rw="${MOCHI_NXF_HOME:-${TMPDIR:-/tmp}/mochi_nxf_$(id -u)}"
+    if [ ! -f "$_mochi_rw/.mochi_ready" ]; then
+        mkdir -p "$_mochi_rw" 2>/dev/null \
+            && cp -a -n /opt/nxf/. "$_mochi_rw"/ 2>/dev/null \
+            && touch "$_mochi_rw/.mochi_ready" 2>/dev/null
+    fi
+    if [ -f "$_mochi_rw/.mochi_ready" ]; then
+        export NXF_HOME="$_mochi_rw"
+    else
+        export NXF_HOME=/opt/nxf
+        echo "WARNING: could not create a writable NXF_HOME at $_mochi_rw; set one with --env MOCHI_NXF_HOME=/writable/path" >&2
+    fi
+    unset _mochi_rw
+    export JAVA_HOME=/opt/conda/envs/mochi
+    export NXF_DISABLE_CHECK_LATEST=true
+    export PATH=/opt/conda/envs/mochi/bin:/usr/KaMRaT/apps:$PATH
+
+%runscript
+    case "${1:-}" in
+        ""|-h|--help|help)
+            cat /.singularity.d/runscript.help
+            exit 0 ;;
+    esac
+    exec nextflow run /opt/mochi/main.nf "$@"
+
+%test
+    command -v kamrat
+    command -v joinCounts
+    test -s /.singularity.d/runscript.help
+    nextflow -version | grep -i version
+    test -w "$NXF_HOME"
+    STAR --version
+    samtools --version | head -n1
+    jellyfish --version
+    mosdepth --version
+    seqkit version
+    bedtools --version
+    fastqc --version
+    trim_galore --version | grep -m1 -i version
+    Rscript -e 'suppressMessages({library(DESeq2); library(GenomicRanges); library(rtracklayer)}); cat("R ok\n")'
+    /opt/conda/envs/AnnotateContig/bin/snakemake --version
+    /opt/conda/envs/AnnotateContig/bin/python -c "import pysam, Bio, pandas; print('annot py ok')"
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get -yq install --no-install-recommends \
+        build-essential cmake git curl bzip2 ca-certificates procps \
+        libboost-math-dev libboost-program-options-dev libboost-test-dev \
+        libboost-serialization-dev libboost-iostreams-dev libboost-dev \
+        libarmadillo-dev binutils-dev python3-pandas python3-numpy python3-dev \
+        libensmallen-dev libstb-dev liblapack-dev libmlpack-dev libblas-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+    # KaMRaT at the validated commit (with joinCounts and helper scripts)
+    git clone https://github.com/Transipedia/KaMRaT.git /usr/KaMRaT
+    cd /usr/KaMRaT
+    git checkout cce7e8be58972d9eee44ebf20366b6730ba5e578
+    git submodule update --init --recursive
+    cmake . && make -j 4
+    (cd related-tools/dekupl-joinCounts && make && mv joinCounts /usr/KaMRaT/apps/)
+    cp related-tools/*.bash related-tools/make-matrix/*.pl /usr/KaMRaT/apps/
+    cd /
+
+    # Conda environments: AnnotateContig (from stage 1) and mochi
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/1.5.10 | tar -xj -C /usr/local bin/micromamba
+    mkdir -p /opt/conda/envs
+    tar -C /opt/conda/envs -xf /opt/mochi_build/AnnotateContig.tar
+    micromamba create -y -n mochi -f /opt/mochi_build/mochi_env.yml
+    micromamba clean -a -y
+    rm -rf /opt/mochi_build
+
+    # Download Nextflow runtime files at build time so no internet is needed at run time
+    export NXF_HOME=/opt/nxf
+    export PATH=/opt/conda/envs/mochi/bin:$PATH
+    export JAVA_HOME=/opt/conda/envs/mochi
+    nextflow -version

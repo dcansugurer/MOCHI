@@ -1,0 +1,5 @@
+condition	sample_id	replicate
+CTRL	sample_A	1
+CTRL	sample_B	2
+TEST	sample_C	1
+TEST	sample_D	2
