@@ -5,8 +5,6 @@
   </picture>
 </p>
 
-<p align="center"><a href="https://doi.org/10.5281/zenodo.23592606"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23592606.svg" alt="DOI"></a></p>
-
 <p align="center"><b>M</b>apping <b>O</b>f <b>C</b>ryptic <b>H</b>idden <b>I</b>ntronic transcripts</p>
 
 MOCHI is a Nextflow pipeline for detecting candidate intronic RNA units from stranded short-read RNA-seq data, combining reference-free k-mer analysis with alignment-based coverage evidence.
