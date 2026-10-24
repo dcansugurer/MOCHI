@@ -142,7 +142,7 @@ The name column must keep the UCSC format (e.g. `ENST00000456328.2_intron_(flank
 Human repeat reference (Dfam), from the [Zenodo record](https://doi.org/10.5281/zenodo.23592606):
 
 ```bash
-wget -O human_repeat_ref.fasta "https://zenodo.org/records/23592606/files/human_repeat_ref.fasta?download=1"
+wget -O human_repeat_ref.fasta "https://zenodo.org/records/23592606/files/human_repeat_reference.fasta?download=1"
 ```
 
 ### STAR and minimap2 index files
@@ -232,4 +232,6 @@ output/
 
 ## License
 
-TODO: licences
+Copyright (C) 2026 Izmir Institute of Technology and I2BC, CNRS.
+
+MOCHI is released under the [GNU General Public License v3.0](LICENSE).
